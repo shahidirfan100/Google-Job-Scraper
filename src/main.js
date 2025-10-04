@@ -29,58 +29,80 @@ const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESUL
 // ------------------------- HELPERS -------------------------
 
 /**
- * Constructs the Google Jobs search URL with enhanced parameters.
+ * Constructs multiple Google Jobs search URL variants for better success rate.
  * @param {string} kw - Keyword.
  * @param {string} loc - Location.
  * @param {'anytime'|'24h'|'7d'|'30d'} date - Posted date filter.
  * @param {number} start - Starting position for pagination.
- * @returns {string}
+ * @returns {string[]} Array of URLs to try
+ */
+const buildStartUrls = (kw, loc, date, start = 0) => {
+    const urls = [];
+    
+    // URL Variant 1: Standard Google Jobs search
+    const searchParams1 = new URLSearchParams();
+    const queryParts1 = [];
+    if (kw) queryParts1.push(kw);
+    if (loc) queryParts1.push(`in ${loc}`);
+    queryParts1.push('jobs');
+    
+    searchParams1.set('q', queryParts1.join(' '));
+    searchParams1.set('ibp', 'htl;jobs');
+    searchParams1.set('sa', 'X');
+    searchParams1.set('ved', '0ahUKEwjX');
+    
+    if (start > 0) searchParams1.set('start', start.toString());
+    if (date && date !== 'anytime') {
+        const dateMap = {
+            '24h': 'date_posted:r_86400',
+            '7d': 'date_posted:r_604800', 
+            '30d': 'date_posted:r_2592000',
+        };
+        if (dateMap[date]) {
+            searchParams1.set('chips', dateMap[date]);
+        }
+    }
+    
+    searchParams1.set('sourceid', 'chrome');
+    searchParams1.set('hl', 'en');
+    searchParams1.set('gl', 'us');
+    urls.push(`https://www.google.com/search?${searchParams1.toString()}`);
+    
+    // URL Variant 2: Alternative job search format
+    const searchParams2 = new URLSearchParams();
+    searchParams2.set('q', `${kw} ${loc ? `"${loc}"` : ''} job openings`.trim());
+    searchParams2.set('ibp', 'htl;jobs');
+    if (start > 0) searchParams2.set('start', start.toString());
+    urls.push(`https://www.google.com/search?${searchParams2.toString()}`);
+    
+    // URL Variant 3: Direct jobs.google.com approach (if available)
+    if (start === 0) { // Only for first page
+        const jobsParams = new URLSearchParams();
+        jobsParams.set('q', kw);
+        if (loc) jobsParams.set('l', loc);
+        if (date && date !== 'anytime') {
+            const dateMap = { '24h': 1, '7d': 7, '30d': 30 };
+            if (dateMap[date]) jobsParams.set('date', dateMap[date]);
+        }
+        urls.push(`https://jobs.google.com/search?${jobsParams.toString()}`);
+    }
+    
+    // URL Variant 4: Simple Google search with job site operators
+    const searchParams4 = new URLSearchParams();
+    const siteOperators = ['site:linkedin.com/jobs', 'site:indeed.com', 'site:glassdoor.com', 'site:monster.com'];
+    const operatorQuery = `${kw} ${loc ? `"${loc}"` : ''} (${siteOperators.join(' OR ')})`;
+    searchParams4.set('q', operatorQuery);
+    if (start > 0) searchParams4.set('start', start.toString());
+    urls.push(`https://www.google.com/search?${searchParams4.toString()}`);
+    
+    return urls;
+};
+
+/**
+ * Legacy function for backward compatibility
  */
 const buildStartUrl = (kw, loc, date, start = 0) => {
-    const searchParams = new URLSearchParams();
-    
-    // Build the main query - more natural job search query
-    const queryParts = [];
-    if (kw) queryParts.push(kw);
-    if (loc) {
-        queryParts.push(`in ${loc}`);
-    }
-    queryParts.push('jobs');
-    
-    searchParams.set('q', queryParts.join(' '));
-    
-    // Essential Google Jobs parameters
-    searchParams.set('ibp', 'htl;jobs'); // Jobs interface parameter
-    searchParams.set('sa', 'X'); // Search action
-    searchParams.set('ved', '0ahUKEwjX'); // View event data (helps with legitimacy)
-    searchParams.set('uule', 'w+CAIQICIaU2FuIEZyYW5jaXNjbywgQ0EsIFVTQQ'); // Location encoding (generic)
-    
-    // Pagination
-    if (start > 0) {
-        searchParams.set('start', start.toString());
-    }
-
-    // Enhanced date mapping with proper Google Jobs parameters
-    const dateMap = {
-        '24h': 'date_posted:r_86400',   // Last 24 hours
-        '7d': 'date_posted:r_604800',   // Last week  
-        '30d': 'date_posted:r_2592000', // Last month
-    };
-
-    if (date && dateMap[date]) {
-        searchParams.set('chips', dateMap[date]);
-        searchParams.set('htichips', dateMap[date]); // Additional chips parameter
-    }
-
-    // Additional parameters for better results
-    searchParams.set('sourceid', 'chrome');
-    searchParams.set('ie', 'UTF-8');
-    
-    // Geographic and interface parameters
-    searchParams.set('hl', 'en'); // Language
-    searchParams.set('gl', 'us'); // Geographic location
-    
-    return `https://www.google.com/search?${searchParams.toString()}`;
+    return buildStartUrls(kw, loc, date, start)[0];
 };
 
 /**
@@ -205,11 +227,15 @@ const crawler = new CheerioCrawler({
         }
     }],
 
-    async requestHandler({ $, request, log: crawlerLog, enqueueLinks, session }) {
+    async requestHandler({ $, request, log: crawlerLog, enqueueLinks, session, body }) {
         if (jobsCollected >= RESULTS_WANTED) {
             crawlerLog.info('Target number of jobs reached, skipping further requests.');
             return;
         }
+
+        crawlerLog.info(`Processing page: ${request.loadedUrl}`);
+        crawlerLog.info(`Page title: ${$('title').text()}`);
+        crawlerLog.info(`Body length: ${body ? body.length : 'N/A'}`);
 
         // Enhanced anti-bot detection and handling
         const challengeIndicators = [
@@ -252,11 +278,183 @@ const crawler = new CheerioCrawler({
             throw new Error('CHALLENGE_DETECTED');
         }
 
-        // Enhanced job card selectors - Google Jobs uses multiple patterns
+        // APPROACH 1: Extract jobs from JSON-LD structured data
+        let jobsFromJsonLd = [];
+        try {
+            const jsonLdScripts = $('script[type="application/ld+json"]');
+            crawlerLog.info(`Found ${jsonLdScripts.length} JSON-LD scripts`);
+            
+            jsonLdScripts.each((_, script) => {
+                try {
+                    const jsonContent = $(script).html();
+                    if (jsonContent) {
+                        const data = JSON.parse(jsonContent);
+                        
+                        // Handle different JSON-LD structures
+                        const extractJobsFromData = (obj) => {
+                            if (Array.isArray(obj)) {
+                                obj.forEach(extractJobsFromData);
+                            } else if (obj && typeof obj === 'object') {
+                                if (obj['@type'] === 'JobPosting' || obj.type === 'JobPosting') {
+                                    const job = {
+                                        title: obj.title || obj.name,
+                                        company: obj.hiringOrganization?.name || obj.company?.name,
+                                        location: obj.jobLocation?.address?.addressLocality || obj.location,
+                                        description_text: obj.description,
+                                        salary: obj.baseSalary?.value || obj.salary,
+                                        job_type: obj.employmentType,
+                                        date_posted: obj.datePosted,
+                                        url: obj.url || obj.applyUrl,
+                                        id: `jsonld_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                                    };
+                                    
+                                    if (job.title) {
+                                        jobsFromJsonLd.push(job);
+                                        crawlerLog.info(`Found job from JSON-LD: ${job.title}`);
+                                    }
+                                } else {
+                                    // Recursively search nested objects
+                                    Object.values(obj).forEach(extractJobsFromData);
+                                }
+                            }
+                        };
+                        
+                        extractJobsFromData(data);
+                    }
+                } catch (error) {
+                    crawlerLog.debug(`Failed to parse JSON-LD: ${error.message}`);
+                }
+            });
+        } catch (error) {
+            crawlerLog.debug(`JSON-LD extraction failed: ${error.message}`);
+        }
+
+        // Process JSON-LD jobs
+        for (const job of jobsFromJsonLd) {
+            if (jobsCollected >= RESULTS_WANTED) break;
+            
+            if (!processedIds.has(job.id)) {
+                const finalJob = {
+                    ...job,
+                    _source: 'google.com/jobs',
+                    _fetchedAt: new Date().toISOString(),
+                    _scrapedUrl: request.loadedUrl,
+                    _searchKeyword: keyword,
+                    _searchLocation: location || null,
+                    _postedDateFilter: posted_date,
+                    _extractionMethod: 'json-ld',
+                };
+
+                await Dataset.pushData(finalJob);
+                jobsCollected++;
+                processedIds.add(job.id);
+                crawlerLog.info(`✅ Job ${jobsCollected}/${RESULTS_WANTED} saved from JSON-LD: "${finalJob.title}"`);
+            }
+        }
+
+        // APPROACH 2: Try to extract jobs from React/Vue app state
+        let jobsFromAppState = [];
+        try {
+            const scriptTags = $('script:not([src])');
+            scriptTags.each((_, script) => {
+                const scriptContent = $(script).html() || '';
+                
+                // Look for job data in various JavaScript patterns
+                const patterns = [
+                    /window\.__INITIAL_STATE__\s*=\s*({.+?});/s,
+                    /window\.__STATE__\s*=\s*({.+?});/s,
+                    /window\.initialData\s*=\s*({.+?});/s,
+                    /"jobs":\s*(\[.+?\])/s,
+                    /"jobPostings":\s*(\[.+?\])/s,
+                ];
+                
+                for (const pattern of patterns) {
+                    const match = scriptContent.match(pattern);
+                    if (match) {
+                        try {
+                            const data = JSON.parse(match[1]);
+                            crawlerLog.info(`Found app state data, analyzing...`);
+                            
+                            // Recursively search for job-like objects
+                            const findJobs = (obj, path = '') => {
+                                if (Array.isArray(obj)) {
+                                    obj.forEach((item, index) => findJobs(item, `${path}[${index}]`));
+                                } else if (obj && typeof obj === 'object') {
+                                    // Check if this object looks like a job
+                                    if (obj.title && (obj.company || obj.companyName) && typeof obj.title === 'string') {
+                                        const job = {
+                                            title: obj.title,
+                                            company: obj.company || obj.companyName || obj.organization,
+                                            location: obj.location || obj.jobLocation,
+                                            description_text: obj.description || obj.summary,
+                                            salary: obj.salary || obj.compensation,
+                                            job_type: obj.jobType || obj.employmentType,
+                                            date_posted: obj.datePosted || obj.postedDate,
+                                            url: obj.url || obj.link || obj.applyUrl,
+                                            id: `appstate_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                                        };
+                                        
+                                        jobsFromAppState.push(job);
+                                        crawlerLog.info(`Found job from app state: ${job.title}`);
+                                    }
+                                    
+                                    // Continue searching nested objects
+                                    Object.keys(obj).forEach(key => {
+                                        if (typeof obj[key] === 'object') {
+                                            findJobs(obj[key], `${path}.${key}`);
+                                        }
+                                    });
+                                }
+                            };
+                            
+                            findJobs(data);
+                        } catch (error) {
+                            crawlerLog.debug(`Failed to parse app state JSON: ${error.message}`);
+                        }
+                    }
+                }
+            });
+        } catch (error) {
+            crawlerLog.debug(`App state extraction failed: ${error.message}`);
+        }
+
+        // Process app state jobs
+        for (const job of jobsFromAppState) {
+            if (jobsCollected >= RESULTS_WANTED) break;
+            
+            if (!processedIds.has(job.id)) {
+                const finalJob = {
+                    ...job,
+                    _source: 'google.com/jobs',
+                    _fetchedAt: new Date().toISOString(),
+                    _scrapedUrl: request.loadedUrl,
+                    _searchKeyword: keyword,
+                    _searchLocation: location || null,
+                    _postedDateFilter: posted_date,
+                    _extractionMethod: 'app-state',
+                };
+
+                await Dataset.pushData(finalJob);
+                jobsCollected++;
+                processedIds.add(job.id);
+                crawlerLog.info(`✅ Job ${jobsCollected}/${RESULTS_WANTED} saved from app state: "${finalJob.title}"`);
+            }
+        }
+
+        // APPROACH 3: Enhanced DOM-based job extraction with multiple selector strategies
+        crawlerLog.info('Starting DOM-based job extraction...');
+        
+        // Log page structure for debugging
+        crawlerLog.info(`Page elements count: div=${$('div').length}, span=${$('span').length}, a=${$('a').length}`);
+        crawlerLog.info(`Data attributes: data-hveid=${$('[data-hveid]').length}, data-ved=${$('[data-ved]').length}`);
+        crawlerLog.info(`Google classes: .g=${$('.g').length}, .tF2Cxc=${$('.tF2Cxc').length}`);
+        
+        // Enhanced job card selectors with more comprehensive patterns
         const jobCardSelectors = [
-            // Primary Google Jobs selectors
+            // Primary Google Jobs selectors (2024-2025 patterns)
             'div[data-hveid]:has(div[role="heading"])', // Job cards with heading role
             'div[jscontroller*="UzbKLd"]', // Google Jobs specific controller
+            'div[jscontroller*="jobs"]', // Jobs controller variations
             'div[data-ved]:has(h3)', // Cards with h3 headings
             'g-card', // Google card components
             'div[data-sokoban-container]', // Sokoban layout containers
@@ -266,28 +464,58 @@ const crawler = new CheerioCrawler({
             'li[data-ved]:has(div[role="heading"])', // List items with job headings
             '.g .tF2Cxc', // Standard Google result structure
             'div[jsaction*="job"]', // Elements with job-related actions
+            
+            // Additional 2025 selectors
+            'div[class*="job"]', // Any div with job in class name
+            'article[data-ved]', // Article elements with tracking
+            'div[role="listitem"]', // List items
+            '[data-testid*="job"]', // Test ID selectors
+            'div[aria-label*="job"]', // Accessibility labels
+            '.srg > div', // Search result group children
+            '#search div[data-hveid]', // Search area results
         ];
 
         let jobCards = $();
         for (const selector of jobCardSelectors) {
             try {
                 const cards = $(selector);
+                crawlerLog.debug(`Selector "${selector}" found ${cards.length} elements`);
+                
                 if (cards.length > 0) {
-                    // Filter out non-job results
+                    // Enhanced filtering with multiple criteria
                     const jobCardsCandidates = cards.filter((_, el) => {
                         const $el = $(el);
                         const text = $el.text().toLowerCase();
+                        const html = $el.html() || '';
+                        
+                        // Check for job-related keywords
                         const hasJobKeywords = text.includes('job') || text.includes('position') || 
                                               text.includes('career') || text.includes('hiring') ||
                                               text.includes('apply') || text.includes('salary') ||
-                                              text.includes('company') || text.includes('employment');
-                        const hasValidLinks = $el.find('a[href*="search"], a[href*="google.com"]').length > 0;
-                        return hasJobKeywords && hasValidLinks;
+                                              text.includes('company') || text.includes('employment') ||
+                                              text.includes('work') || text.includes('role');
+                        
+                        // Check for structural elements
+                        const hasStructure = $el.find('h3, div[role="heading"], a[href]').length > 0;
+                        
+                        // Check for links (but be more flexible)
+                        const hasLinks = $el.find('a[href]').length > 0;
+                        
+                        // Avoid navigation elements
+                        const isNotNavigation = !text.includes('next page') && 
+                                               !text.includes('previous') &&
+                                               !text.includes('search') &&
+                                               !html.includes('nav');
+                        
+                        // Size check (avoid tiny elements)
+                        const hasContent = text.length > 20;
+                        
+                        return hasJobKeywords && hasStructure && hasLinks && isNotNavigation && hasContent;
                     });
                     
                     if (jobCardsCandidates.length > 0) {
                         jobCards = jobCardsCandidates;
-                        crawlerLog.info(`Using selector: ${selector}, found ${jobCards.length} job cards`);
+                        crawlerLog.info(`✓ Using selector: "${selector}", found ${jobCards.length} job cards`);
                         break;
                     }
                 }
@@ -296,56 +524,107 @@ const crawler = new CheerioCrawler({
             }
         }
 
-        // Enhanced fallback: if no cards found, try broader selectors with better filtering
+        // Enhanced fallback with even broader search
         if (jobCards.length === 0) {
-            crawlerLog.info('Primary selectors failed, trying fallback approach...');
+            crawlerLog.warning('Primary selectors failed, trying comprehensive fallback approach...');
             
-            // Try different approaches
+            // Try ultra-broad approaches
             const fallbackApproaches = [
-                () => $('div[data-hveid]').filter((_, el) => {
+                // Approach 1: Any div with job-related content and links
+                () => $('div').filter((_, el) => {
                     const $el = $(el);
                     const text = $el.text().toLowerCase();
-                    return (text.includes('job') || text.includes('position')) && 
-                           $el.find('a[href*="search"]').length > 0 &&
-                           $el.find('div[role="heading"], h3').length > 0;
+                    return (text.includes('job') || text.includes('position') || text.includes('hiring')) && 
+                           $el.find('a[href]').length > 0 &&
+                           text.length > 50 && text.length < 2000;
                 }),
-                () => $('.g').filter((_, el) => {
+                
+                // Approach 2: Any element with Google tracking and job content
+                () => $('[data-hveid], [data-ved]').filter((_, el) => {
                     const $el = $(el);
                     const text = $el.text().toLowerCase();
-                    return text.includes('job') && $el.find('h3, div[role="heading"]').length > 0;
+                    return text.includes('job') && $el.find('a[href]').length > 0;
                 }),
-                () => $('div[jscontroller]').filter((_, el) => {
+                
+                // Approach 3: Links that might be job postings
+                () => $('a[href*="search"], a[href*="google.com"]').parent().filter((_, el) => {
                     const $el = $(el);
                     const text = $el.text().toLowerCase();
-                    return (text.includes('apply') || text.includes('hiring')) && 
-                           $el.find('a[href]').length > 0;
+                    return text.includes('job') || text.includes('position');
+                }),
+                
+                // Approach 4: Standard Google result structure
+                () => $('.g, .tF2Cxc').filter((_, el) => {
+                    const $el = $(el);
+                    const text = $el.text().toLowerCase();
+                    return (text.includes('job') || text.includes('career')) && 
+                           $el.find('h3, a[href]').length > 0;
                 }),
             ];
             
-            for (const approach of fallbackApproaches) {
+            for (let i = 0; i < fallbackApproaches.length; i++) {
                 try {
-                    const cards = approach();
+                    const cards = fallbackApproaches[i]();
+                    crawlerLog.info(`Fallback approach ${i + 1} found ${cards.length} candidates`);
+                    
                     if (cards.length > 0) {
                         jobCards = cards;
-                        crawlerLog.info(`Fallback approach found ${cards.length} job cards`);
+                        crawlerLog.info(`✓ Fallback approach ${i + 1} succeeded with ${cards.length} job cards`);
                         break;
                     }
                 } catch (error) {
-                    crawlerLog.debug(`Fallback approach failed: ${error.message}`);
+                    crawlerLog.debug(`Fallback approach ${i + 1} failed: ${error.message}`);
                 }
             }
         }
 
         crawlerLog.info(`Found ${jobCards.length} potential job cards on page: ${request.loadedUrl}`);
         
-        // Debug: Log page structure if no cards found
+        // Enhanced debugging for failed job detection
         if (jobCards.length === 0) {
-            crawlerLog.warning('No job cards found. Page structure debug:');
-            crawlerLog.info(`Page title: ${$('title').text()}`);
-            crawlerLog.info(`Main content selectors present: ${$('div[data-hveid]').length} data-hveid, ${$('.g').length} .g, ${$('div[jscontroller]').length} jscontroller`);
+            crawlerLog.warning('❌ No job cards found. Comprehensive page analysis:');
+            crawlerLog.info(`Page title: "${$('title').text()}"`);
+            crawlerLog.info(`URL: ${request.loadedUrl}`);
+            crawlerLog.info(`Body size: ${$('body').text().length} characters`);
             crawlerLog.info(`Page contains "job": ${$('body').text().toLowerCase().includes('job')}`);
+            crawlerLog.info(`Page contains "position": ${$('body').text().toLowerCase().includes('position')}`);
+            crawlerLog.info(`Page contains "apply": ${$('body').text().toLowerCase().includes('apply')}`);
+            
+            // Log element counts
+            crawlerLog.info(`Element counts:`);
+            crawlerLog.info(`  - div[data-hveid]: ${$('div[data-hveid]').length}`);
+            crawlerLog.info(`  - .g: ${$('.g').length}`);
+            crawlerLog.info(`  - div[jscontroller]: ${$('div[jscontroller]').length}`);
+            crawlerLog.info(`  - h3: ${$('h3').length}`);
+            crawlerLog.info(`  - a[href]: ${$('a[href]').length}`);
+            
+            // Log sample text from key elements
+            $('div[data-hveid]').slice(0, 3).each((i, el) => {
+                const text = $(el).text().trim().substring(0, 100);
+                crawlerLog.info(`  - data-hveid[${i}]: "${text}"`);
+            });
+            
+            $('.g').slice(0, 3).each((i, el) => {
+                const text = $(el).text().trim().substring(0, 100);
+                crawlerLog.info(`  - .g[${i}]: "${text}"`);
+            });
+            
+            // Try to save page HTML for debugging
+            try {
+                const pageHtml = $.html();
+                crawlerLog.info(`Full page HTML length: ${pageHtml.length}`);
+                
+                // Save a sample of the HTML to understand the structure
+                if (pageHtml.length > 1000) {
+                    const sample = pageHtml.substring(0, 2000);
+                    crawlerLog.debug(`HTML sample: ${sample}`);
+                }
+            } catch (error) {
+                crawlerLog.debug(`Could not analyze HTML: ${error.message}`);
+            }
         }
 
+        // Process DOM-extracted job cards
         for (let i = 0; i < jobCards.length && jobsCollected < RESULTS_WANTED; i++) {
             const $el = $(jobCards[i]);
             
@@ -571,6 +850,66 @@ const crawler = new CheerioCrawler({
             }
         }
 
+        // APPROACH 4: Fallback text extraction if no structured data found
+        if (jobsCollected < RESULTS_WANTED && jobsFromJsonLd.length === 0 && jobsFromAppState.length === 0 && jobCards.length === 0) {
+            crawlerLog.warning('No structured data found, attempting text-based extraction...');
+            
+            try {
+                const bodyText = $('body').text();
+                const lines = bodyText.split('\n').filter(line => line.trim().length > 0);
+                
+                // Look for job-like patterns in text
+                const jobPatterns = [
+                    /(.+?)\s+at\s+(.+?)\s+•?\s*(.+?)(?:\n|$)/gi, // "Job Title at Company • Location"
+                    /(.+?)\s+-\s+(.+?)\s+-\s+(.+?)(?:\n|$)/gi,  // "Job Title - Company - Location"
+                    /Job:\s*(.+?)\s+Company:\s*(.+?)(?:\s+Location:\s*(.+?))?(?:\n|$)/gi,
+                ];
+                
+                let textBasedJobs = [];
+                for (const pattern of jobPatterns) {
+                    let match;
+                    while ((match = pattern.exec(bodyText)) !== null && textBasedJobs.length < 10) {
+                        const job = {
+                            title: match[1]?.trim(),
+                            company: match[2]?.trim(),
+                            location: match[3]?.trim(),
+                            id: `text_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                        };
+                        
+                        if (job.title && job.title.length > 3 && job.title.length < 100) {
+                            textBasedJobs.push(job);
+                            crawlerLog.info(`Found job from text: ${job.title}`);
+                        }
+                    }
+                }
+                
+                // Process text-based jobs
+                for (const job of textBasedJobs) {
+                    if (jobsCollected >= RESULTS_WANTED) break;
+                    
+                    if (!processedIds.has(job.id)) {
+                        const finalJob = {
+                            ...job,
+                            _source: 'google.com/jobs',
+                            _fetchedAt: new Date().toISOString(),
+                            _scrapedUrl: request.loadedUrl,
+                            _searchKeyword: keyword,
+                            _searchLocation: location || null,
+                            _postedDateFilter: posted_date,
+                            _extractionMethod: 'text-parsing',
+                        };
+
+                        await Dataset.pushData(finalJob);
+                        jobsCollected++;
+                        processedIds.add(job.id);
+                        crawlerLog.info(`✅ Job ${jobsCollected}/${RESULTS_WANTED} saved from text: "${finalJob.title}"`);
+                    }
+                }
+            } catch (error) {
+                crawlerLog.debug(`Text-based extraction failed: ${error.message}`);
+            }
+        }
+
         // Enhanced pagination handling with better detection
         if (request.userData.label !== 'DETAIL' && jobsCollected < RESULTS_WANTED) {
             const paginationSelectors = [
@@ -645,11 +984,34 @@ const crawler = new CheerioCrawler({
                 
                 await crawler.addRequests([{
                     url: fullNextUrl,
-                    userData: { label: 'LIST' },
+                    userData: { 
+                        label: 'LIST',
+                        urlVariant: request.userData.urlVariant || 1,
+                    },
                 }]);
                 crawlerLog.info('Enqueued next page of job listings.');
             } else {
                 crawlerLog.info('No more pages found or pagination limit reached.');
+                
+                // If this was the first page and we didn't find many jobs, try other URL variants
+                if (request.userData.isInitialRequest && jobsCollected < 5 && request.userData.urlVariant === 1) {
+                    crawlerLog.info('Few jobs found with primary URL, trying alternative URL formats...');
+                    
+                    const alternativeUrls = buildStartUrls(keyword, location, posted_date).slice(1); // Skip first URL
+                    const alternativeRequests = alternativeUrls.map((url, index) => ({
+                        url,
+                        userData: { 
+                            label: 'LIST',
+                            urlVariant: index + 2, // Start from variant 2
+                            isInitialRequest: true,
+                        },
+                    }));
+                    
+                    if (alternativeRequests.length > 0) {
+                        await crawler.addRequests(alternativeRequests);
+                        crawlerLog.info(`Added ${alternativeRequests.length} alternative URL variants to queue`);
+                    }
+                }
             }
         }
     },
@@ -950,11 +1312,52 @@ crawler.router.addHandler('DETAIL', async ({ $, request, log: crawlerLog, sessio
 });
 
 // ------------------------- RUN -------------------------
-const startUrl = buildStartUrl(keyword, location, posted_date);
-log.info(`Starting scrape with URL: ${startUrl}`);
+const startUrls = buildStartUrls(keyword, location, posted_date);
+log.info(`Starting scrape with ${startUrls.length} URL variants:`);
+startUrls.forEach((url, index) => {
+    log.info(`  ${index + 1}. ${url}`);
+});
 
-await crawler.run([{ url: startUrl, userData: { label: 'LIST' } }]);
+// Create requests for all URL variants
+const initialRequests = startUrls.map((url, index) => ({
+    url,
+    userData: { 
+        label: 'LIST',
+        urlVariant: index + 1,
+        isInitialRequest: true,
+    },
+}));
 
-log.info(`✓ Scraping completed. Total jobs collected: ${jobsCollected}`);
+log.info(`Input parameters:`);
+log.info(`  - Keyword: "${keyword}"`);
+log.info(`  - Location: "${location || 'Not specified'}"`);
+log.info(`  - Posted date filter: "${posted_date}"`);
+log.info(`  - Results wanted: ${RESULTS_WANTED}`);
+log.info(`  - Max retries: ${maxRequestRetries}`);
+log.info(`  - Using proxy: ${proxyConf ? 'Yes' : 'No'}`);
 
-await Actor.exit();
+try {
+    await crawler.run(initialRequests);
+    
+    log.info(`✅ Scraping completed successfully!`);
+    log.info(`📊 Final Results:`);
+    log.info(`  - Total jobs collected: ${jobsCollected}/${RESULTS_WANTED}`);
+    log.info(`  - Unique jobs processed: ${processedIds.size}`);
+    log.info(`  - Search keyword: "${keyword}"`);
+    log.info(`  - Search location: "${location || 'Not specified'}"`);
+    
+    if (jobsCollected === 0) {
+        log.warning(`⚠️  No jobs were collected. This might be due to:`);
+        log.warning(`   1. Google's anti-bot measures blocking requests`);
+        log.warning(`   2. No jobs matching the search criteria`);
+        log.warning(`   3. Changes in Google's page structure`);
+        log.warning(`   4. Proxy or network issues`);
+        log.warning(`   Please check the logs above for more details.`);
+    }
+    
+} catch (error) {
+    log.error(`❌ Scraping failed with error: ${error.message}`);
+    throw error;
+} finally {
+    await Actor.exit();
+}
