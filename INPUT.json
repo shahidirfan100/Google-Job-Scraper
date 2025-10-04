@@ -1,0 +1,13 @@
+{
+  "keyword": "Software Engineer",
+  "location": "London",
+  "posted_date": "7d",
+  "results_wanted": 50,
+  "maxRequestRetries": 5,
+  "requestDelay": 3000,
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "proxyGroups": ["RESIDENTIAL"],
+    "countryCode": "US"
+  }
+}

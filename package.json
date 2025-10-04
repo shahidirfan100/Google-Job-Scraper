@@ -1,0 +1,15 @@
+{
+  "name": "google-jobs-scraper-enhanced",
+  "version": "2.0.0",
+  "description": "Enhanced Google jobs scraper with advanced selectors and robust data extraction using Crawlee CheerioCrawler.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "apify": "^3.4.5",
+    "crawlee": "^3.14.1",
+    "cheerio": "^1.0.0-rc.12"
+  }
+}
