@@ -5,7 +5,7 @@ A robust and stealth Google Jobs scraper built with Crawlee CheerioCrawler and g
 ## 🚀 Features
 
 ### Core Functionality
-- **Smart Job Extraction**: Extracts comprehensive job details including title, company, location, salary, job type, and full descriptions
+- **Smart Job Extraction**: Dual extraction strategy using JSON-LD and DOM parsing
 - **Advanced Pagination**: Handles Google Jobs pagination automatically
 - **Detail Page Processing**: Fetches complete job information from individual job detail pages
 
@@ -22,7 +22,7 @@ A robust and stealth Google Jobs scraper built with Crawlee CheerioCrawler and g
 - **Robust Pagination**: Multiple pagination detection methods
 
 ### Data Quality
-- **Salary Extraction**: Detects salary information in multiple currencies (USD, GBP, EUR)
+- **Salary Extraction**: Detects salary information in multiple currencies
 - **Job Type Detection**: Identifies full-time, part-time, contract, remote positions
 - **Company Information**: Enhanced company name extraction from multiple sources
 - **Apply URLs**: Extracts direct application links from job postings
@@ -33,7 +33,7 @@ A robust and stealth Google Jobs scraper built with Crawlee CheerioCrawler and g
 {
   "keyword": "Software Engineer",
   "location": "London", 
-  "posted_date": "7d",
+  "posted_date": "week",
   "results_wanted": 50,
   "maxRequestRetries": 5,
   "requestDelay": 3000,
@@ -49,13 +49,18 @@ A robust and stealth Google Jobs scraper built with Crawlee CheerioCrawler and g
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `keyword` | string | ✅ | Job search keyword (e.g., "Software Engineer") |
+| `keyword` | string | ✅ (or `startUrl`) | Job search keyword (e.g., "Software Engineer") |
 | `location` | string | ❌ | Job location (e.g., "London", "Remote") |
-| `posted_date` | string | ❌ | Filter by posting date: `anytime`, `24h`, `7d`, `30d` |
+| `startUrl` | string | ❌ | Direct Google Jobs URL (alternative to keyword/location) |
+| `posted_date` | string | ❌ | Filter: `anytime`, `today`, `3days`, `week`, `month` (default: `anytime`) |
 | `results_wanted` | number | ❌ | Maximum number of jobs to scrape (default: 100) |
+| `max_pages` | number | ❌ | Maximum pages to scrape (default: 20) |
+| `collectDetails` | boolean | ❌ | Fetch full job details from detail pages (default: true) |
 | `maxRequestRetries` | number | ❌ | Max retries for failed requests (default: 3) |
 | `requestDelay` | number | ❌ | Delay between requests in ms (default: 2000) |
-| `proxyConfiguration` | object | ❌ | Proxy settings for avoiding IP blocks |
+| `proxyConfiguration` | object | ❌ | Proxy settings for avoiding IP blocks (HIGHLY recommended) |
+
+**⚠️ Note**: Either `keyword` or `startUrl` must be provided. If using `startUrl`, make sure it includes `ibp=htl;jobs` parameter.
 
 ## 📋 Output Format
 
@@ -67,32 +72,43 @@ Each scraped job contains:
   "title": "Senior Software Engineer",
   "company": "Tech Company Inc",
   "location": "San Francisco, CA",
-  "date_posted": "2 days ago",
+  "date_posted": "2025-10-05",
   "salary": "$120,000 - $180,000 per year",
-  "job_type": "full-time",
-  "description_text": "Clean text description...",
-  "description_html": "<div>HTML description...</div>",
-  "source": "linkedin.com",
-  "url": "https://linkedin.com/jobs/apply/123456",
-  "_source": "google.com/jobs",
-  "_fetchedAt": "2024-01-15T10:30:00.000Z",
-  "_scrapedUrl": "https://google.com/search?..."
+  "employment_type": "Full-time",
+  "description_text": "Short description (500 chars)...",
+  "description_full": "Complete job description with all details...",
+  "url": "https://example.com/jobs/apply/123456",
+  "source": "Google Jobs",
+  "responsibilities": "List of responsibilities...",
+  "qualifications": "Required qualifications...",
+  "education_requirements": "Bachelor's degree...",
+  "experience_requirements": "3+ years...",
+  "skills_required": "Python, JavaScript, AWS...",
+  "_extractedFrom": "json-ld",
+  "_fetchedAt": "2025-10-10T10:30:00.000Z",
+  "_scrapedUrl": "https://google.com/search?...",
+  "_searchKeyword": "Software Engineer",
+  "_searchLocation": "London"
 }
 ```
 
 ## 🛡️ Anti-Detection Features
 
 ### User Agent Rotation
-- Rotates between 5 different realistic Chrome/Safari user agents
-- Includes proper browser headers and capabilities
+- Rotates between 4 different realistic Chrome user agents
+- Includes proper browser headers (Sec-Fetch-*, DNT, etc.)
+- Randomized on each request
 
 ### Request Patterns
-- Random delays between 1-4 seconds per request
+- Random delays between requests (configurable, default 2-5 seconds)
 - Human-like browsing behavior simulation
-- Configurable rate limiting
+- Configurable rate limiting (default: 20 requests/minute)
+- Session pooling with cookie persistence
 
-### Session Management
-- Persistent cookie sessions
+### Anti-Bot Detection
+- Automatic detection of CAPTCHA and "unusual traffic" pages
+- Session retirement when blocked
+- Automatic retry with new session
 - Automatic session rotation on detection
 - Proxy integration for IP rotation
 

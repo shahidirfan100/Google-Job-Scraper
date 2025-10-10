@@ -41,38 +41,46 @@ log.info(`📊 Target: ${RESULTS_WANTED} jobs, Max pages: ${max_pages}`);
 // ------------------------- HELPERS -------------------------
 
 /**
- * Build Google Careers search URL
+ * Build Google Jobs search URL
  */
-const buildCareersSearchUrl = (keyword, location, dateFilter, page = 1) => {
-    const baseUrl = 'https://www.google.com/about/careers/applications/jobs/results';
+const buildCareersSearchUrl = (keyword, location, dateFilter, start = 0) => {
+    const baseUrl = 'https://www.google.com/search';
     const params = new URLSearchParams();
     
-    if (keyword) {
-        params.set('q', keyword);
-    }
-    
+    // Build the search query
+    let searchQuery = keyword || 'jobs';
     if (location) {
-        params.set('location', location);
+        searchQuery += ` ${location}`;
     }
     
-    // Date filter mapping for Google Careers
+    params.set('q', searchQuery);
+    params.set('ibp', 'htl;jobs'); // Critical: This tells Google to show job listings
+    params.set('hl', 'en'); // Language
+    params.set('gl', 'us'); // Geolocation
+    
+    // Date filter mapping for Google Jobs
     if (dateFilter && dateFilter !== 'anytime') {
         const dateFilters = {
-            'today': '1',
-            'last3days': '3',
-            'last7days': '7',
-            'last14days': '14'
+            'today': 'today',
+            'last3days': '3days',
+            '3d': '3days',
+            'last7days': 'week',
+            '7d': 'week',
+            'week': 'week',
+            'last14days': 'month',
+            '14d': 'month',
+            'month': 'month'
         };
-        if (dateFilters[dateFilter]) {
-            params.set('posted_date', dateFilters[dateFilter]);
-        }
+        const mappedFilter = dateFilters[dateFilter.toLowerCase()] || dateFilter;
+        params.set('chips', `date_posted:${mappedFilter}`);
     }
     
-    if (page > 1) {
-        params.set('page', page.toString());
+    // Pagination (Google Jobs uses 'start' parameter, typically increments by 10)
+    if (start > 0) {
+        params.set('start', start.toString());
     }
     
-    const url = params.toString() ? `${baseUrl}?${params.toString()}` : baseUrl;
+    const url = `${baseUrl}?${params.toString()}`;
     return url;
 };
 
@@ -98,29 +106,53 @@ const extractJsonLd = ($, crawlerLog) => {
     $('script[type="application/ld+json"]').each((i, elem) => {
         try {
             const content = $(elem).html();
-            if (!content) return;
+            if (!content || content.trim().length === 0) return;
             
             const data = JSON.parse(content);
             
             // Handle single JobPosting
             if (data['@type'] === 'JobPosting') {
                 jsonLdJobs.push(data);
+                crawlerLog.debug(`Found JobPosting in JSON-LD script ${i}`);
             }
             // Handle array of JobPostings
             else if (Array.isArray(data)) {
-                const jobPostings = data.filter(item => item['@type'] === 'JobPosting');
-                jsonLdJobs.push(...jobPostings);
+                const jobPostings = data.filter(item => item && item['@type'] === 'JobPosting');
+                if (jobPostings.length > 0) {
+                    crawlerLog.debug(`Found ${jobPostings.length} JobPostings in array at script ${i}`);
+                    jsonLdJobs.push(...jobPostings);
+                }
             }
-            // Handle nested structure
-            else if (data['@graph']) {
-                const jobPostings = data['@graph'].filter(item => item['@type'] === 'JobPosting');
-                jsonLdJobs.push(...jobPostings);
+            // Handle nested structure with @graph
+            else if (data['@graph'] && Array.isArray(data['@graph'])) {
+                const jobPostings = data['@graph'].filter(item => item && item['@type'] === 'JobPosting');
+                if (jobPostings.length > 0) {
+                    crawlerLog.debug(`Found ${jobPostings.length} JobPostings in @graph at script ${i}`);
+                    jsonLdJobs.push(...jobPostings);
+                }
+            }
+            // Handle ItemList containing JobPostings
+            else if (data['@type'] === 'ItemList' && data.itemListElement) {
+                const items = Array.isArray(data.itemListElement) ? data.itemListElement : [data.itemListElement];
+                items.forEach(item => {
+                    if (item.item && item.item['@type'] === 'JobPosting') {
+                        jsonLdJobs.push(item.item);
+                        crawlerLog.debug(`Found JobPosting in ItemList at script ${i}`);
+                    } else if (item['@type'] === 'JobPosting') {
+                        jsonLdJobs.push(item);
+                        crawlerLog.debug(`Found JobPosting in ItemList at script ${i}`);
+                    }
+                });
             }
         } catch (e) {
             // Invalid JSON, skip
-            crawlerLog.debug(`Failed to parse JSON-LD: ${e.message}`);
+            crawlerLog.debug(`Failed to parse JSON-LD script ${i}: ${e.message}`);
         }
     });
+    
+    if (jsonLdJobs.length > 0) {
+        crawlerLog.info(`✓ Successfully extracted ${jsonLdJobs.length} jobs from JSON-LD`);
+    }
     
     return jsonLdJobs;
 };
@@ -176,71 +208,194 @@ const parseJsonLdJob = (jobData) => {
 const extractJobsFromDom = ($, crawlerLog) => {
     const jobs = [];
     
-    // Try multiple selector strategies
+    // Google Jobs specific selectors (updated for current Google Jobs markup)
     const selectors = [
-        '[data-job-id]',
-        'li[role="listitem"]',
-        '.VfPpkd-rymPhb',
-        '[class*="job-"]',
-        'div[class*="result"]',
-        'article',
+        'li.iFjolb',  // Primary Google Jobs listing container
+        'div.PwjeAc',  // Alternative job card container
+        'li[data-ved]',  // Job listings with data-ved attribute
+        'div[jsname][data-job-id]',  // Jobs with data-job-id
+        '[role="listitem"]',  // Generic ARIA listitem
+        'div.jobCard',  // Job card class
+        '.job-listing',  // Generic job listing class
     ];
     
     let jobElements = $();
+    let usedSelector = null;
+    
     for (const selector of selectors) {
         const elements = $(selector);
         if (elements.length > 0) {
             crawlerLog.info(`✓ Found ${elements.length} elements with selector: ${selector}`);
             jobElements = elements;
+            usedSelector = selector;
             break;
         }
     }
     
     if (jobElements.length === 0) {
         crawlerLog.warning('No job elements found with any selector');
+        
+        // Log sample HTML to help debug
+        const bodySnippet = $('body').html()?.substring(0, 1000) || '';
+        crawlerLog.debug(`Body HTML snippet (first 1000 chars): ${bodySnippet}`);
+        
+        // Try to find any div with job-related classes
+        const anyJobDivs = $('div[class*="job"], li[class*="job"], div[id*="job"]');
+        if (anyJobDivs.length > 0) {
+            crawlerLog.info(`Found ${anyJobDivs.length} elements with 'job' in class/id`);
+            anyJobDivs.slice(0, 3).each((i, el) => {
+                const classes = $(el).attr('class') || '';
+                const id = $(el).attr('id') || '';
+                crawlerLog.debug(`  Sample ${i+1}: class="${classes}", id="${id}"`);
+            });
+        }
+        
         return jobs;
     }
+    
+    crawlerLog.info(`Processing ${jobElements.length} job elements with selector: ${usedSelector}`);
     
     jobElements.each((index, element) => {
         const $element = $(element);
         
-        // Extract title
-        const titleEl = $element.find('h3, h2, h4, [class*="title"], a[class*="job"]').first();
-        const title = titleEl.text().trim();
+        // Extract title - Google Jobs typically uses specific heading structure
+        let title = '';
+        const titleSelectors = [
+            'div[role="heading"]',  // ARIA heading
+            'h2', 'h3', 'h4',  // Standard headings
+            '.BjJfJf',  // Google Jobs title class (may change)
+            'div.job-title',
+            'a[class*="title"]',
+            'span[class*="title"]',
+        ];
         
-        if (!title || title.length < 3) return; // Skip invalid entries
+        for (const sel of titleSelectors) {
+            const titleEl = $element.find(sel).first();
+            if (titleEl.length > 0) {
+                title = titleEl.text().trim();
+                if (title && title.length >= 3) break;
+            }
+        }
+        
+        if (!title || title.length < 3) {
+            crawlerLog.debug(`Skipping element ${index}: no valid title found`);
+            return; // Skip invalid entries
+        }
         
         // Extract company
-        const companyEl = $element.find('[class*="company"], [class*="organization"], [class*="employer"]').first();
-        const company = companyEl.text().trim() || 'Google';
+        let company = 'Not specified';
+        const companySelectors = [
+            'div.vNEEBe',  // Google Jobs company class (may change)
+            'div[class*="company"]',
+            'span[class*="company"]',
+            'div[class*="employer"]',
+            'span[class*="organization"]',
+        ];
+        
+        for (const sel of companySelectors) {
+            const companyEl = $element.find(sel).first();
+            if (companyEl.length > 0) {
+                company = companyEl.text().trim();
+                if (company && company.length > 0) break;
+            }
+        }
         
         // Extract location
-        const locationEl = $element.find('[class*="location"], [class*="office"], [class*="place"]').first();
-        const location = locationEl.text().trim() || 'Not specified';
+        let location = 'Not specified';
+        const locationSelectors = [
+            'div.Qk80Jf',  // Google Jobs location class (may change)
+            'span[class*="location"]',
+            'div[class*="location"]',
+            'span[class*="place"]',
+            'div[class*="office"]',
+        ];
+        
+        for (const sel of locationSelectors) {
+            const locationEl = $element.find(sel).first();
+            if (locationEl.length > 0) {
+                location = locationEl.text().trim();
+                if (location && location.length > 0) break;
+            }
+        }
         
         // Extract description
-        const descEl = $element.find('p, [class*="description"], [class*="snippet"]').first();
-        const description = descEl.text().trim();
+        let description = '';
+        const descSelectors = [
+            'div[class*="description"]',
+            'div[class*="snippet"]',
+            'div[class*="summary"]',
+            'p',
+            'span[class*="desc"]',
+        ];
+        
+        for (const sel of descSelectors) {
+            const descEl = $element.find(sel).first();
+            if (descEl.length > 0) {
+                description = descEl.text().trim();
+                if (description && description.length > 10) break;
+            }
+        }
         
         // Extract URL
+        let fullUrl = null;
         const linkEl = $element.find('a[href]').first();
-        const url = linkEl.attr('href') || null;
-        const fullUrl = url && url.startsWith('http') ? url : (url ? `https://www.google.com${url}` : null);
+        const url = linkEl.attr('href');
         
-        // Extract job ID
-        const jobId = $element.attr('data-job-id') || 
-                     (fullUrl ? fullUrl.split('/').pop().split('?')[0] : null) ||
-                     `job_${Date.now()}_${index}`;
+        if (url) {
+            if (url.startsWith('http')) {
+                fullUrl = url;
+            } else if (url.startsWith('/')) {
+                fullUrl = `https://www.google.com${url}`;
+            } else {
+                fullUrl = `https://www.google.com/${url}`;
+            }
+        }
+        
+        // Extract job ID from data attribute or URL
+        let jobId = $element.attr('data-job-id') || 
+                   $element.attr('data-ved') ||
+                   $element.attr('id');
+        
+        if (!jobId && fullUrl) {
+            // Try to extract from URL
+            const urlMatch = fullUrl.match(/jobs\/([^/?]+)/);
+            jobId = urlMatch ? urlMatch[1] : null;
+        }
+        
+        if (!jobId) {
+            jobId = `job_${Date.now()}_${index}_${Math.random().toString(36).substr(2, 9)}`;
+        }
         
         // Extract employment type if available
-        const employmentTypeEl = $element.find('[class*="type"], [class*="employment"]').first();
-        const employmentType = employmentTypeEl.text().trim() || 'Not specified';
+        let employmentType = 'Not specified';
+        const employmentTypeEl = $element.find('span[class*="type"], div[class*="employment"]').first();
+        if (employmentTypeEl.length > 0) {
+            employmentType = employmentTypeEl.text().trim();
+        }
         
         // Extract date posted if available
-        const dateEl = $element.find('[class*="date"], [class*="posted"], time').first();
-        const datePosted = dateEl.attr('datetime') || dateEl.text().trim() || null;
+        let datePosted = null;
+        const dateSelectors = ['time', 'span[class*="date"]', 'div[class*="posted"]', 'span[class*="ago"]'];
+        for (const sel of dateSelectors) {
+            const dateEl = $element.find(sel).first();
+            if (dateEl.length > 0) {
+                datePosted = dateEl.attr('datetime') || dateEl.text().trim();
+                if (datePosted) break;
+            }
+        }
         
-        jobs.push({
+        // Extract salary if available
+        let salary = null;
+        const salarySelectors = ['span[class*="salary"]', 'div[class*="compensation"]', 'span[class*="pay"]'];
+        for (const sel of salarySelectors) {
+            const salaryEl = $element.find(sel).first();
+            if (salaryEl.length > 0) {
+                salary = salaryEl.text().trim();
+                if (salary) break;
+            }
+        }
+        
+        const job = {
             id: jobId,
             title: title,
             company: company,
@@ -250,13 +405,17 @@ const extractJobsFromDom = ($, crawlerLog) => {
             employment_type: employmentType,
             date_posted: datePosted,
             url: fullUrl,
-            salary: null,
+            salary: salary,
             responsibilities: null,
             qualifications: null,
             _extractedFrom: 'dom'
-        });
+        };
+        
+        jobs.push(job);
+        crawlerLog.debug(`Extracted job ${index + 1}: "${title}" at ${company}`);
     });
     
+    crawlerLog.info(`✓ Successfully extracted ${jobs.length} jobs from DOM`);
     return jobs;
 };
 
@@ -347,8 +506,11 @@ const findNextPageUrl = ($, currentUrl, crawlerLog) => {
     const nextSelectors = [
         'a[aria-label*="Next"]',
         'a[aria-label*="next"]',
+        'a#pnnext',  // Google's standard "Next" button ID
+        'a.nBDE1b',  // Google Jobs next button class
         'a.next',
         'a[rel="next"]',
+        'td.b a',  // Google pagination table cell
         'a:contains("Next")',
         'a:contains("›")',
         'button[aria-label*="Next"]',
@@ -357,7 +519,7 @@ const findNextPageUrl = ($, currentUrl, crawlerLog) => {
     
     for (const selector of nextSelectors) {
         const nextLink = $(selector).first();
-        if (nextLink.length > 0 && !nextLink.attr('disabled')) {
+        if (nextLink.length > 0 && !nextLink.attr('disabled') && !nextLink.hasClass('disabled')) {
             const href = nextLink.attr('href');
             if (href) {
                 const nextUrl = href.startsWith('http') ? href : new URL(href, currentUrl).href;
@@ -367,16 +529,16 @@ const findNextPageUrl = ($, currentUrl, crawlerLog) => {
         }
     }
     
-    // Try to find pagination by page number
-    const currentPageMatch = currentUrl.match(/[?&]page=(\d+)/);
-    const currentPage = currentPageMatch ? parseInt(currentPageMatch[1]) : 1;
+    // For Google Jobs, pagination uses 'start' parameter (increments by 10)
+    const url = new URL(currentUrl);
+    const currentStart = parseInt(url.searchParams.get('start') || '0');
+    const nextStart = currentStart + 10;
     
     // Build next page URL
-    const url = new URL(currentUrl);
-    url.searchParams.set('page', (currentPage + 1).toString());
+    url.searchParams.set('start', nextStart.toString());
     const nextUrl = url.toString();
     
-    crawlerLog.info(`✓ Built next page URL: page ${currentPage + 1}`);
+    crawlerLog.info(`✓ Built next page URL: start=${nextStart}`);
     return nextUrl;
 };
 
@@ -455,6 +617,10 @@ const crawler = new CheerioCrawler({
         // Log basic page info
         crawlerLog.info(`📊 Page stats: ${$('div').length} divs, ${$('a').length} links, ${$('script').length} scripts`);
         
+        // Log JSON-LD scripts count
+        const jsonLdScripts = $('script[type="application/ld+json"]');
+        crawlerLog.info(`📊 Found ${jsonLdScripts.length} JSON-LD script(s)`);
+        
         // Extract jobs - try JSON-LD first
         let jobs = [];
         const jsonLdJobs = extractJsonLd($, crawlerLog);
@@ -463,18 +629,48 @@ const crawler = new CheerioCrawler({
             crawlerLog.info(`✓ Found ${jsonLdJobs.length} jobs in JSON-LD`);
             jobs = jsonLdJobs.map(parseJsonLdJob);
         } else {
-            crawlerLog.info('No JSON-LD found, trying DOM extraction...');
+            crawlerLog.info('No JSON-LD jobs found, trying DOM extraction...');
             jobs = extractJobsFromDom($, crawlerLog);
         }
         
         crawlerLog.info(`📋 Extracted ${jobs.length} jobs from page`);
+        
+        // If no jobs found, log debugging information
+        if (jobs.length === 0) {
+            crawlerLog.warning('⚠️ No jobs extracted from this page');
+            crawlerLog.info('Debugging information:');
+            
+            // Check for common Google Jobs elements
+            const liCount = $('li').length;
+            const liWithData = $('li[data-ved]').length;
+            const jobCardDivs = $('div[class*="job"]').length;
+            
+            crawlerLog.info(`  - Total <li> elements: ${liCount}`);
+            crawlerLog.info(`  - <li> with data-ved: ${liWithData}`);
+            crawlerLog.info(`  - Divs with 'job' in class: ${jobCardDivs}`);
+            
+            // Log a sample of classes on the page
+            const sampleClasses = new Set();
+            $('div[class], li[class]').slice(0, 50).each((i, el) => {
+                const classes = $(el).attr('class') || '';
+                classes.split(' ').forEach(cls => {
+                    if (cls.length > 0) sampleClasses.add(cls);
+                });
+            });
+            
+            crawlerLog.info(`  - Sample classes found: ${Array.from(sampleClasses).slice(0, 20).join(', ')}`);
+            
+            // Save HTML for debugging (first 5000 chars)
+            const htmlSnippet = $('body').html()?.substring(0, 5000) || '';
+            crawlerLog.debug(`HTML snippet: ${htmlSnippet}`);
+        }
         
         // Process each job
         for (const job of jobs) {
             if (jobsCollected >= RESULTS_WANTED) break;
             
             // Add metadata
-            job.source = 'google.com/careers';
+            job.source = 'Google Jobs';
             job._fetchedAt = new Date().toISOString();
             job._scrapedUrl = request.loadedUrl;
             job._searchKeyword = keyword || null;
