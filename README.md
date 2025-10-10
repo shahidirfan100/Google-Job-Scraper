@@ -49,18 +49,13 @@ A robust and stealth Google Jobs scraper built with Crawlee CheerioCrawler and g
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `keyword` | string | ✅ (or `startUrl`) | Job search keyword (e.g., "Software Engineer") |
+| `keyword` | string | ✅ | Job search keyword (e.g., "Software Engineer") |
 | `location` | string | ❌ | Job location (e.g., "London", "Remote") |
-| `startUrl` | string | ❌ | Direct Google Jobs URL (alternative to keyword/location) |
-| `posted_date` | string | ❌ | Filter: `anytime`, `today`, `3days`, `week`, `month` (default: `anytime`) |
+| `posted_date` | string | ❌ | Filter by posting date: `anytime`, `today`, `3days`, `week`, `month` |
 | `results_wanted` | number | ❌ | Maximum number of jobs to scrape (default: 100) |
-| `max_pages` | number | ❌ | Maximum pages to scrape (default: 20) |
-| `collectDetails` | boolean | ❌ | Fetch full job details from detail pages (default: true) |
 | `maxRequestRetries` | number | ❌ | Max retries for failed requests (default: 3) |
 | `requestDelay` | number | ❌ | Delay between requests in ms (default: 2000) |
-| `proxyConfiguration` | object | ❌ | Proxy settings for avoiding IP blocks (HIGHLY recommended) |
-
-**⚠️ Note**: Either `keyword` or `startUrl` must be provided. If using `startUrl`, make sure it includes `ibp=htl;jobs` parameter.
+| `proxyConfiguration` | object | ❌ | Proxy settings for avoiding IP blocks |
 
 ## 📋 Output Format
 
@@ -72,23 +67,16 @@ Each scraped job contains:
   "title": "Senior Software Engineer",
   "company": "Tech Company Inc",
   "location": "San Francisco, CA",
-  "date_posted": "2025-10-05",
+  "date_posted": "2 days ago",
   "salary": "$120,000 - $180,000 per year",
-  "employment_type": "Full-time",
-  "description_text": "Short description (500 chars)...",
-  "description_full": "Complete job description with all details...",
-  "url": "https://example.com/jobs/apply/123456",
-  "source": "Google Jobs",
-  "responsibilities": "List of responsibilities...",
-  "qualifications": "Required qualifications...",
-  "education_requirements": "Bachelor's degree...",
-  "experience_requirements": "3+ years...",
-  "skills_required": "Python, JavaScript, AWS...",
-  "_extractedFrom": "json-ld",
-  "_fetchedAt": "2025-10-10T10:30:00.000Z",
-  "_scrapedUrl": "https://google.com/search?...",
-  "_searchKeyword": "Software Engineer",
-  "_searchLocation": "London"
+  "job_type": "full-time",
+  "description_text": "Clean text description...",
+  "description_html": "<div>HTML description...</div>",
+  "source": "linkedin.com",
+  "url": "https://linkedin.com/jobs/apply/123456",
+  "_source": "google.com/jobs",
+  "_fetchedAt": "2024-01-15T10:30:00.000Z",
+  "_scrapedUrl": "https://google.com/search?..."
 }
 ```
 
