@@ -3,8 +3,10 @@
   "location": "London",
   "posted_date": "week",
   "results_wanted": 50,
+  "max_pages": 5,
+  "collectDetails": false,
   "maxRequestRetries": 5,
-  "requestDelay": 3000,
+  "requestDelay": 5000,
   "proxyConfiguration": {
     "useApifyProxy": true,
     "proxyGroups": ["RESIDENTIAL"],

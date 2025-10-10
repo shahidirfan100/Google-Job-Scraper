@@ -23,6 +23,9 @@ const {
     requestDelay = 2000,
 } = input;
 
+// Log the raw input for debugging
+log.info('📥 Input received:', JSON.stringify(input, null, 2));
+
 // Determine if using startUrl or building from keyword/location
 const useStartUrl = Boolean(startUrl);
 if (!useStartUrl && !keyword) {
@@ -30,7 +33,7 @@ if (!useStartUrl && !keyword) {
 }
 
 const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESULTS_WANTED_RAW) : Number.MAX_SAFE_INTEGER;
-log.info(`🚀 Starting Google Careers scraper`);
+log.info(`🚀 Starting Google Jobs scraper`);
 if (useStartUrl) {
     log.info(`📍 Using start URL: ${startUrl}`);
 } else {
@@ -579,30 +582,46 @@ const processedIds = new Set();
 const detailPageQueue = [];
 
 // ------------------------- PROXY -------------------------
-const proxyConf = proxyConfiguration
-    ? await Actor.createProxyConfiguration(proxyConfiguration)
-    : undefined;
+// Validate and configure proxy
+let proxyConf;
+if (proxyConfiguration) {
+    // Check if using GOOGLESERP (which doesn't support HTTPS)
+    if (proxyConfiguration.proxyGroups && proxyConfiguration.proxyGroups.includes('GOOGLESERP')) {
+        log.warning('⚠️ GOOGLESERP proxy group does not support HTTPS. Switching to RESIDENTIAL.');
+        proxyConfiguration.proxyGroups = ['RESIDENTIAL'];
+    }
+    
+    log.info(`🔒 Proxy configuration: ${JSON.stringify(proxyConfiguration)}`);
+    proxyConf = await Actor.createProxyConfiguration(proxyConfiguration);
+} else {
+    log.warning('⚠️ No proxy configured. Google may block requests. Use residential proxies for production.');
+    proxyConf = undefined;
+}
 
 // ------------------------- CRAWLER -------------------------
 const crawler = new CheerioCrawler({
     proxyConfiguration: proxyConf,
-    maxRequestsPerMinute: 20,
-    requestHandlerTimeoutSecs: 60,
-    navigationTimeoutSecs: 60,
-    maxConcurrency: 3,
+    maxRequestsPerMinute: 10, // Reduced from 20 to be more conservative
+    requestHandlerTimeoutSecs: 90, // Increased timeout
+    navigationTimeoutSecs: 90, // Increased timeout
+    maxConcurrency: 1, // Reduced from 3 to avoid detection
     useSessionPool: true,
     persistCookiesPerSession: true,
     maxRequestRetries: maxRequestRetries,
 
-    preNavigationHooks: [async ({ request }) => {
-        // Random delay to appear more human-like
-        const delay = requestDelay + Math.random() * 2000;
-        await new Promise(resolve => setTimeout(resolve, delay));
+    preNavigationHooks: [async ({ request, log: hookLog }) => {
+        // Longer random delay to appear more human-like (3-8 seconds)
+        const baseDelay = Math.max(requestDelay, 3000); // Minimum 3 seconds
+        const randomDelay = Math.random() * 5000; // Add 0-5 seconds
+        const totalDelay = baseDelay + randomDelay;
+        
+        hookLog.info(`⏳ Waiting ${Math.round(totalDelay / 1000)}s before request...`);
+        await new Promise(resolve => setTimeout(resolve, totalDelay));
         
         // Set realistic headers
         request.headers = {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
             'User-Agent': getRandomUserAgent(),
             'Accept-Encoding': 'gzip, deflate, br',
             'DNT': '1',
@@ -631,17 +650,47 @@ const crawler = new CheerioCrawler({
 
         pagesVisited++;
         crawlerLog.info(`📄 Processing page ${pagesVisited}/${max_pages}: ${request.loadedUrl}`);
-        crawlerLog.info(`📄 Page title: "${$('title').text()}"`);
         
-        // Check for anti-bot challenges
-        const pageText = $('body').text().toLowerCase();
-        if (pageText.includes('unusual traffic') || 
-            pageText.includes('captcha') || 
-            pageText.includes('robot') ||
-            pageText.includes('automated')) {
-            crawlerLog.warning('⚠️ Anti-bot challenge detected');
-            if (session) session.retire();
+        const pageTitle = $('title').text();
+        crawlerLog.info(`📄 Page title: "${pageTitle}"`);
+        
+        // Check for anti-bot challenges - but be more lenient
+        const pageText = $('body').text();
+        const bodySnippet = pageText.substring(0, 500).toLowerCase();
+        
+        // Check for CAPTCHA/blocking pages
+        const isCaptcha = bodySnippet.includes('captcha') || 
+                         bodySnippet.includes('please verify') ||
+                         pageTitle.toLowerCase().includes('captcha');
+        
+        const isBlocked = bodySnippet.includes('unusual traffic') || 
+                         bodySnippet.includes('automated queries') ||
+                         bodySnippet.includes('not a robot');
+        
+        if (isCaptcha || isBlocked) {
+            crawlerLog.warning('⚠️ Anti-bot challenge detected on page');
+            crawlerLog.warning(`   Title: "${pageTitle}"`);
+            crawlerLog.warning(`   Body snippet: ${bodySnippet.substring(0, 200)}`);
+            
+            // Retire session and wait longer before retry
+            if (session) {
+                crawlerLog.info('   Retiring session and waiting 30 seconds...');
+                session.retire();
+            }
+            
+            // Wait before throwing error to allow for retry with new session
+            await new Promise(resolve => setTimeout(resolve, 30000));
             throw new Error('CHALLENGE_DETECTED');
+        }
+        
+        // Check if this is actually a Google Jobs page
+        const hasJobsContent = pageText.toLowerCase().includes('jobs') || 
+                              pageText.toLowerCase().includes('apply') ||
+                              $('script[type="application/ld+json"]').length > 0;
+        
+        if (!hasJobsContent) {
+            crawlerLog.warning('⚠️ Page does not appear to contain job listings');
+            crawlerLog.debug(`   URL: ${request.loadedUrl}`);
         }
         
         // Log basic page info
@@ -755,11 +804,27 @@ const crawler = new CheerioCrawler({
     },
 
     async failedRequestHandler({ request, log: crawlerLog, session }, error) {
-        crawlerLog.error(`❌ Request failed: ${request.url} - ${error.message}`);
+        crawlerLog.error(`❌ Request failed: ${request.url}`);
+        crawlerLog.error(`   Error: ${error.message}`);
         
+        // Handle different types of errors
         if (error.message.includes('CHALLENGE_DETECTED')) {
-            crawlerLog.warning('🤖 Anti-bot challenge detected, waiting before retry...');
-            await new Promise(resolve => setTimeout(resolve, 15000));
+            crawlerLog.warning('🤖 Anti-bot challenge detected');
+            crawlerLog.info('   Retiring session and waiting 60 seconds before next attempt...');
+            if (session) session.retire();
+            await new Promise(resolve => setTimeout(resolve, 60000));
+        } else if (error.message.includes('GOOGLESERP') || error.message.includes('proxy group')) {
+            crawlerLog.error('❌ Proxy configuration error detected');
+            crawlerLog.error('   The GOOGLESERP proxy group cannot be used with HTTPS URLs');
+            crawlerLog.error('   Please use RESIDENTIAL or DATACENTER proxy groups instead');
+            throw new Error('Invalid proxy configuration - use RESIDENTIAL or DATACENTER, not GOOGLESERP');
+        } else if (error.message.includes('timeout')) {
+            crawlerLog.warning('⏱️ Request timeout - Google may be slow or blocking');
+            if (session) session.retire();
+            await new Promise(resolve => setTimeout(resolve, 10000));
+        } else {
+            crawlerLog.warning('⚠️ Unknown error, waiting before retry...');
+            await new Promise(resolve => setTimeout(resolve, 5000));
             if (session) session.retire();
         }
     },
