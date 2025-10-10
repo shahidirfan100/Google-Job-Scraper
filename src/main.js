@@ -521,25 +521,55 @@ const findNextPageUrl = ($, currentUrl, crawlerLog) => {
         const nextLink = $(selector).first();
         if (nextLink.length > 0 && !nextLink.attr('disabled') && !nextLink.hasClass('disabled')) {
             const href = nextLink.attr('href');
-            if (href) {
-                const nextUrl = href.startsWith('http') ? href : new URL(href, currentUrl).href;
-                crawlerLog.info(`✓ Found next page via selector ${selector}: ${nextUrl}`);
-                return nextUrl;
+            if (href && href.trim().length > 0) {
+                try {
+                    // Build the next URL
+                    let nextUrl;
+                    if (href.startsWith('http://') || href.startsWith('https://')) {
+                        nextUrl = href;
+                    } else if (href.startsWith('/')) {
+                        // Absolute path
+                        const baseUrl = new URL(currentUrl);
+                        nextUrl = `${baseUrl.origin}${href}`;
+                    } else if (href.startsWith('?')) {
+                        // Query string only
+                        const baseUrl = new URL(currentUrl);
+                        nextUrl = `${baseUrl.origin}${baseUrl.pathname}${href}`;
+                    } else {
+                        // Relative path - skip these as they're likely not pagination links
+                        crawlerLog.debug(`Skipping relative URL from selector ${selector}: ${href}`);
+                        continue;
+                    }
+                    
+                    // Validate the URL is actually different and valid
+                    if (nextUrl && nextUrl !== currentUrl) {
+                        crawlerLog.info(`✓ Found next page via selector ${selector}: ${nextUrl}`);
+                        return nextUrl;
+                    }
+                } catch (error) {
+                    crawlerLog.debug(`Failed to parse URL from selector ${selector}, href="${href}": ${error.message}`);
+                    continue;
+                }
             }
         }
     }
     
     // For Google Jobs, pagination uses 'start' parameter (increments by 10)
-    const url = new URL(currentUrl);
-    const currentStart = parseInt(url.searchParams.get('start') || '0');
-    const nextStart = currentStart + 10;
-    
-    // Build next page URL
-    url.searchParams.set('start', nextStart.toString());
-    const nextUrl = url.toString();
-    
-    crawlerLog.info(`✓ Built next page URL: start=${nextStart}`);
-    return nextUrl;
+    try {
+        const url = new URL(currentUrl);
+        const currentStart = parseInt(url.searchParams.get('start') || '0');
+        const nextStart = currentStart + 10;
+        
+        // Build next page URL
+        url.searchParams.set('start', nextStart.toString());
+        const nextUrl = url.toString();
+        
+        crawlerLog.info(`✓ Built next page URL: start=${nextStart}`);
+        return nextUrl;
+    } catch (error) {
+        crawlerLog.warning(`Failed to build pagination URL from ${currentUrl}: ${error.message}`);
+        return null;
+    }
 };
 
 // ------------------------- STATE -------------------------
@@ -708,8 +738,14 @@ const crawler = new CheerioCrawler({
             const nextPageUrl = findNextPageUrl($, request.loadedUrl, crawlerLog);
             
             if (nextPageUrl && nextPageUrl !== request.loadedUrl) {
-                await crawler.addRequests([{ url: nextPageUrl }]);
-                crawlerLog.info(`📄 Added next page to queue: ${nextPageUrl}`);
+                // Validate URL before adding to queue
+                try {
+                    new URL(nextPageUrl); // This will throw if invalid
+                    await crawler.addRequests([{ url: nextPageUrl }]);
+                    crawlerLog.info(`📄 Added next page to queue: ${nextPageUrl}`);
+                } catch (error) {
+                    crawlerLog.warning(`⚠️ Invalid pagination URL, stopping: ${nextPageUrl} - ${error.message}`);
+                }
             } else {
                 crawlerLog.info('📚 No more pages found or reached the end');
             }
