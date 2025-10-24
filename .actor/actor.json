@@ -10,5 +10,8 @@
   "input": "./input_schema.json",
   "nodeJsVersion": "22",
   "tags": ["jobs", "google", "scraper"],
-  "categories": ["jobs"]
+  "categories": ["jobs"],
+  "storages": {
+    "dataset": "./dataset_schema.json"
+  }
 }
