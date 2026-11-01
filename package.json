@@ -1,15 +1,26 @@
 {
-  "name": "google-jobs-scraper-enhanced",
-  "version": "2.0.0",
-  "description": "Enhanced Google jobs scraper with advanced selectors and robust data extraction using Crawlee CheerioCrawler.",
+  "name": "google-jobs-scraper",
+  "version": "3.0.0",
+  "description": "Extracts Google Jobs listings, including companies, locations, salary ranges, descriptions, qualifications, and application links.",
   "type": "module",
   "scripts": {
     "start": "node src/main.js",
-    "test": "node test.js"
+    "lint": "eslint",
+    "lint:fix": "eslint --fix",
+    "test": "node test/smoke.js"
   },
   "dependencies": {
-    "apify": "^3.4.5",
-    "crawlee": "^3.14.1",
-    "cheerio": "^1.0.0-rc.12"
+    "apify": "^3.7.2",
+    "cheerio": "^1.2.0",
+    "impit": "^0.14.8"
+  },
+  "devDependencies": {
+    "@apify/eslint-config": "^2.0.6",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.6"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

@@ -12,6 +12,7 @@
           "salary",
           "job_type",
           "date_posted",
+          "source",
           "url"
         ]
       },
@@ -19,7 +20,7 @@
         "component": "table",
         "properties": {
           "title": {
-            "label": "Job Title",
+            "label": "Job title",
             "format": "text"
           },
           "company": {
@@ -35,15 +36,19 @@
             "format": "text"
           },
           "job_type": {
-            "label": "Job Type",
+            "label": "Job type",
             "format": "text"
           },
           "date_posted": {
             "label": "Posted",
             "format": "text"
           },
+          "source": {
+            "label": "Source",
+            "format": "text"
+          },
           "url": {
-            "label": "URL",
+            "label": "Job URL",
             "format": "link"
           }
         }

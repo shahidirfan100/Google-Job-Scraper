@@ -1,34 +1,34 @@
 {
-  "title": "Google Careers Jobs Scraper",
-  "description": "Scrape jobs from Google Careers (google.com/about/careers). Provide keyword/location or a direct Google Careers URL.",
+  "title": "Google Jobs Scraper",
+  "description": "Collect job listings from Google Jobs search results by keyword, location, or a Google Jobs URL. Returns job titles, companies, locations, salary ranges, posting dates, descriptions, qualifications, and application links.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
     "startUrl": {
       "title": "Start URL",
       "type": "string",
-      "description": "Start scraping from a specific Google Careers URL (e.g., https://www.google.com/about/careers/applications/jobs/results?q=engineer). If provided, this will be used instead of Keyword/Location.",
+      "description": "A Google Jobs search results URL. When supplied, it takes precedence over Keyword and Location, and its query and location parameters are used as provided.",
       "editor": "textfield",
-      "example": "https://www.google.com/about/careers/applications/jobs/results?q=software+engineer"
+      "example": "https://www.google.com/search?q=software+engineer&udm=8&hl=en&gl=us"
     },
     "keyword": {
-      "title": "Keyword (if not using Start URL)",
+      "title": "Keyword",
       "type": "string",
-      "description": "Job search keyword(s), e.g., 'Software Engineer', 'Product Manager'.",
+      "description": "Job search terms, such as 'software engineer' or 'product manager'. Ignored when Start URL is supplied.",
       "editor": "textfield",
-      "example": "Software Engineer"
+      "prefill": "software engineer",
+      "default": "software engineer"
     },
     "location": {
-      "title": "Location (if not using Start URL)",
+      "title": "Location",
       "type": "string",
-      "description": "Geographic location to search in, e.g., 'Mountain View', 'New York', 'Remote'.",
-      "editor": "textfield",
-      "example": "Mountain View"
+      "description": "Optional location to include in the Google Jobs query, such as 'New York, NY', 'London', or 'Remote'. Ignored when Start URL is supplied.",
+      "editor": "textfield"
     },
     "posted_date": {
-      "title": "Posted Date (if not using Start URL)",
+      "title": "Posted date",
       "type": "string",
-      "description": "Filter jobs by how recently they were posted.",
+      "description": "Keep jobs posted within this window. Listings without a recognizable posting date are kept.",
       "enum": [
         "anytime",
         "today",
@@ -39,47 +39,32 @@
       "default": "anytime",
       "editor": "select"
     },
-    "collectDetails": {
-      "title": "Collect job details",
-      "type": "boolean",
-      "description": "If enabled, scraper opens job detail pages for full description, qualifications, and salary information. This will take longer but provides more complete data.",
-      "editor": "checkbox",
-      "default": true
-    },
     "results_wanted": {
-      "title": "Maximum number of jobs",
+      "title": "Maximum jobs",
       "type": "integer",
-      "description": "The maximum number of jobs to collect. Set to a high number to collect all available jobs.",
-      "default": 100,
+      "description": "Stop after this many jobs have been saved.",
+      "default": 20,
       "minimum": 1,
       "editor": "number"
     },
     "max_pages": {
-      "title": "Maximum number of pages",
+      "title": "Maximum search requests",
       "type": "integer",
-      "description": "A safety cap on the number of search result pages to visit. Each page typically contains 10-25 jobs.",
+      "description": "Starting Google Jobs request budget. Each request returns up to 10 listings. If this is too low for results_wanted, the Actor raises the budget and logs the change.",
       "minimum": 1,
-      "maximum": 100,
-      "default": 20,
-      "editor": "number"
-    },
-    "maxRequestRetries": {
-      "title": "Max request retries",
-      "type": "integer",
-      "description": "Maximum number of times to retry a failed request.",
-      "minimum": 0,
-      "maximum": 10,
-      "default": 3,
+      "default": 10,
       "editor": "number"
     },
     "proxyConfiguration": {
       "title": "Proxy configuration",
       "type": "object",
-      "description": "Use Apify Proxy for the best results and to avoid blocking. Residential proxies recommended for Google.",
+      "description": "The default uses Apify's Google SERP proxy group. You can select another Apify group or provide custom proxy URLs.",
       "editor": "proxy",
-      "prefill": {
+      "default": {
         "useApifyProxy": true,
-        "apifyProxyGroups": ["RESIDENTIAL"]
+        "apifyProxyGroups": [
+          "GOOGLESERP"
+        ]
       }
     }
   },
