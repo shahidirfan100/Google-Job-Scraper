@@ -16,7 +16,9 @@ const DEFAULT_PROFILES = [
     'chrome136',
     'firefox135',
 ];
-const EMPTY_PATTERN = /did not match any documents|no results found|there are no jobs that match/i;
+// The Jobs vertical through GOOGLE_SERP answers in 27-70 s (plain search: ~6 s). A 30 s timeout
+// failed every attempt, so the request budget has to outlast the slow render.
+const REQUEST_TIMEOUT_MS = 90_000;
 const BLOCK_TEXT = /trouble accessing|unusual traffic|not a robot|before you continue|verify you are human/i;
 
 function sleep(ms) {
@@ -139,7 +141,7 @@ export class GoogleJobsClient {
             : undefined;
 
         return {
-            client: new Impit({ browser: profile, proxyUrl, timeout: 30_000, vanillaFallback: true }),
+            client: new Impit({ browser: profile, proxyUrl, timeout: REQUEST_TIMEOUT_MS, vanillaFallback: true }),
             profile,
         };
     }
@@ -153,7 +155,7 @@ export class GoogleJobsClient {
         return url.toString();
     }
 
-    async fetchPage(url, query, retryEmpty = false) {
+    async fetchPage(url, query) {
         let lastError;
 
         for (let attempt = 0; attempt < this.maxAttempts; attempt += 1) {
@@ -177,26 +179,23 @@ export class GoogleJobsClient {
                     .replace(/<[^>]+>/g, ' ');
 
                 if (response.url.includes('/sorry/') || BLOCK_TEXT.test(visible)) {
-                    throw new Error('Google Jobs served a blocked or consent page');
+                    const error = new Error('Google Jobs served a blocked or consent page');
+                    error.maxAttempts = 2;
+                    throw error;
                 }
 
                 const jobs = parseGoogleJobsPage(html, { query, hl: this.hl, gl: this.gl });
-                if (jobs.length > 0) return { jobs, profile, url };
-
-                if (EMPTY_PATTERN.test(visible)) {
-                    return { jobs: [], profile, url };
-                }
-                if (html.length < 500_000 && retryEmpty && attempt < this.maxAttempts - 1) {
-                    throw new Error('Google Jobs returned a page without job cards');
-                }
-                if (html.length < 500_000) {
-                    return { jobs: [], profile, url };
-                }
-
-                throw new Error('Google Jobs page did not contain job cards');
+                // About half of the Jobs answers come back as a plain SERP with no cards. Treating
+                // that as an empty variant is faster than retrying it for another 60 s; the next
+                // query variant is the retry.
+                return { jobs, profile, url };
             } catch (error) {
                 lastError = error;
                 log.warning(`Search request attempt ${attempt + 1} failed (${profile}): ${firstLine(error.message)}`);
+                // A timeout or a block page means the session is bad; one more try with a fresh
+                // session is the useful limit, more attempts only burn the run budget.
+                const attemptCap = error.name === 'TimeoutError' ? 2 : (error.maxAttempts ?? this.maxAttempts);
+                if (attempt + 1 >= attemptCap) break;
                 await sleep(backoff(attempt, error.retryAfter));
             }
         }
@@ -204,7 +203,7 @@ export class GoogleJobsClient {
         throw lastError ?? new Error('Google Jobs search failed');
     }
 
-    async search(query, { url, retryEmpty = false } = {}) {
-        return this.fetchPage(url || this.buildUrl(query), query, retryEmpty);
+    async search(query, { url } = {}) {
+        return this.fetchPage(url || this.buildUrl(query), query);
     }
 }

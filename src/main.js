@@ -1,6 +1,8 @@
 import { Actor, log } from 'apify';
 
 import { buildQueryVariants, GoogleJobsClient } from './google-jobs-client.js';
+import { resolveGl } from './markets.js';
+import { restoreProgress, saveProgress } from './progress.js';
 
 const DEFAULT_KEYWORD = 'software engineer';
 const POSTED_DAYS = {
@@ -84,7 +86,7 @@ function resolveSearch(input) {
         keyword: readString(input.keyword) || DEFAULT_KEYWORD,
         location: readString(input.location),
         hl: 'en',
-        gl: 'us',
+        gl: resolveGl(readString(input.location)),
         startUrl: null,
     };
 }
@@ -141,7 +143,8 @@ try {
     const maxPages = integer(input.max_pages, 10, 1);
     const postedDate = normalizePostedDate(input.posted_date);
     const proxyConfiguration = await createProxyConfiguration(input.proxyConfiguration);
-    const maxConcurrency = 3;
+    // Requests spend 30-70 s each, so more in flight cuts wall time without more requests.
+    const maxConcurrency = 5;
     const minimumPagesForTarget = Math.ceil(resultsWanted / 5);
     const requestBudget = Math.max(maxPages, minimumPagesForTarget);
 
@@ -168,21 +171,29 @@ try {
 
     log.info(
         `Start | mode=${search.mode} | query="${search.keyword}" | location="${search.location || 'any'}" | `
-        + `target=${resultsWanted} | max_requests=${requestBudget} | concurrency=${maxConcurrency} | `
-        + `proxy=${proxyConfiguration ? 'enabled' : 'disabled'}`,
+        + `gl=${search.gl} | target=${resultsWanted} | max_requests=${requestBudget} | `
+        + `concurrency=${maxConcurrency} | proxy=${proxyConfiguration ? 'enabled' : 'disabled'}`,
     );
 
-    const seenIds = new Set();
-    const seenSignatures = new Set();
-    let saved = 0;
-    let requests = 0;
+    const runId = Actor.getEnv().actorRunId;
+    const store = runId ? await Actor.openKeyValueStore() : null;
+    const resumed = runId ? restoreProgress(await store.getValue('PROGRESS'), runId) : null;
+
+    const seenIds = new Set(resumed?.seenIds ?? []);
+    const seenSignatures = new Set(resumed?.seenSignatures ?? []);
+    let saved = resumed?.saved ?? 0;
+    let requests = resumed?.requests ?? 0;
     let filtered = 0;
     let duplicates = 0;
     let failedRequests = 0;
-    let emptyStreak = 0;
+    let lowYieldStreak = 0;
     let stopReason = 'variants_exhausted';
 
-    for (let index = 0; index < queries.length; index += maxConcurrency) {
+    if (resumed) {
+        log.info(`Resumed after container migration | saved=${saved} | requests=${requests} | next=${resumed.nextIndex}`);
+    }
+
+    for (let index = resumed?.nextIndex ?? 0; index < queries.length; index += maxConcurrency) {
         if (saved >= resultsWanted || requests >= requestBudget) break;
 
         const remaining = requestBudget - requests;
@@ -190,10 +201,7 @@ try {
         requests += batchQueries.length;
 
         const outcomes = await Promise.allSettled(
-            batchQueries.map((variant, offset) => client.search(variant.query, {
-                url: variant.url,
-                retryEmpty: index === 0 && offset === 0,
-            })),
+            batchQueries.map((variant) => client.search(variant.query, { url: variant.url })),
         );
 
         for (let offset = 0; offset < outcomes.length; offset += 1) {
@@ -212,10 +220,9 @@ try {
 
             const result = outcome.value;
             if (result.jobs.length === 0) {
-                emptyStreak += 1;
+                lowYieldStreak += 1;
                 continue;
             }
-            emptyStreak = 0;
 
             const fetchedAt = new Date().toISOString();
             const batch = [];
@@ -246,19 +253,28 @@ try {
                 }));
             }
 
-            if (batch.length === 0) continue;
+            if (batch.length === 0) {
+                lowYieldStreak += 1;
+                continue;
+            }
 
             await Actor.pushData(batch);
             saved += batch.length;
             log.info(`Saved ${batch.length} jobs from "${variant.query}" | total ${saved}/${resultsWanted}`);
+            lowYieldStreak = batch.length < 2 ? lowYieldStreak + 1 : 0;
+            await saveProgress(store, runId, { nextIndex: index, saved, requests, seenIds, seenSignatures });
         }
+
+        await saveProgress(store, runId, {
+            nextIndex: index + batchQueries.length, saved, requests, seenIds, seenSignatures,
+        });
 
         if (saved >= resultsWanted) {
             stopReason = 'results_wanted';
             break;
         }
-        if (emptyStreak >= 8) {
-            stopReason = 'no_more_results';
+        if (lowYieldStreak >= maxConcurrency) {
+            stopReason = 'low_yield';
             break;
         }
         if (requests >= requestBudget) {
@@ -273,6 +289,13 @@ try {
         throw new Error(
             'Google Jobs returned no listings. Confirm that the GOOGLESERP proxy group is available and retry. '
             + 'If it is blocked, try DATACENTER, RESIDENTIAL, or a custom proxy.',
+        );
+    }
+
+    if (saved < resultsWanted) {
+        log.warning(
+            `Saved ${saved} of ${resultsWanted} jobs (stop=${stopReason}). `
+            + 'Raise max_pages or broaden the keyword to reach the target.',
         );
     }
 

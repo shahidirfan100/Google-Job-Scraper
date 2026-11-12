@@ -22,7 +22,7 @@
     "location": {
       "title": "Location",
       "type": "string",
-      "description": "Optional location to include in the Google Jobs query, such as 'New York, NY', 'London', or 'Remote'. Ignored when Start URL is supplied.",
+      "description": "Optional location to include in the Google Jobs query, such as 'New York, NY', 'London', or 'Remote'. The country or region in this value also selects the Google country index, so 'Dubai' returns UAE results. Ignored when Start URL is supplied.",
       "editor": "textfield"
     },
     "posted_date": {

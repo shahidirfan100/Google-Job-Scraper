@@ -3,7 +3,9 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { buildQueryVariants } from '../src/google-jobs-client.js';
+import { resolveGl } from '../src/markets.js';
 import { parseGoogleJobsPage } from '../src/parse-google-jobs.js';
+import { restoreProgress } from '../src/progress.js';
 
 const sampleHtml = `
 <div data-preview-id="jABC123" id="ABC123==">
@@ -52,6 +54,28 @@ test('builds unique, relevant Google Jobs query variants', () => {
     assert.ok(variants.includes('remote software engineer'));
     assert.ok(variants.includes('software engineer entry level'));
     assert.equal(new Set(variants.map((value) => value.toLowerCase())).size, variants.length);
+});
+
+test('maps the location to the Google country index', () => {
+    assert.equal(resolveGl('Dubai'), 'ae');
+    assert.equal(resolveGl('Abu Dhabi, UAE'), 'ae');
+    assert.equal(resolveGl('Berlin, Germany'), 'de');
+    assert.equal(resolveGl('New York, NY'), 'us');
+    assert.equal(resolveGl('London'), 'gb');
+    assert.equal(resolveGl(''), 'us');
+    assert.equal(resolveGl('Somewhere Unlisted'), 'us');
+});
+
+test('resumes only a checkpoint written by the same run', () => {
+    const checkpoint = { runId: 'run1', nextIndex: 5, saved: 12, requests: 5, seenIds: ['a'], seenSignatures: ['x'] };
+    const resumed = restoreProgress(checkpoint, 'run1');
+    assert.equal(resumed.nextIndex, 5);
+    assert.equal(resumed.saved, 12);
+    assert.deepEqual(resumed.seenIds, ['a']);
+
+    assert.equal(restoreProgress(checkpoint, 'run2'), null);
+    assert.equal(restoreProgress(checkpoint, undefined), null);
+    assert.equal(restoreProgress(null, 'run1'), null);
 });
 
 test('keeps one prefill and no removed controls in the input schema', () => {

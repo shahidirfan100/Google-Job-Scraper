@@ -50,7 +50,7 @@ The default proxy configuration uses Apify's Google SERP proxy group, the group 
 |-----------|------|----------|---------|-------------|
 | `startUrl` | String | No | - | Google Jobs search URL. Takes precedence over keyword and location. |
 | `keyword` | String | No | `software engineer` | Role or search terms, such as `data analyst` or `product manager`. |
-| `location` | String | No | - | Location to include in the search, such as `New York, NY`, `London`, or `Remote`. |
+| `location` | String | No | - | Location to include in the search, such as `New York, NY`, `London`, or `Remote`. The Country/region in this value also picks the Google country index (Dubai uses the UAE results). |
 | `posted_date` | String | No | `anytime` | Keep jobs from `today`, `last3days`, `last7days`, or `last14days`. |
 | `results_wanted` | Integer | No | `20` | Stop after this many jobs have been saved. |
 | `max_pages` | Integer | No | `10` | Starting Google Jobs request budget. Each request returns up to 10 listings. If the budget is too low for `results_wanted`, the Actor raises it and logs the change. |

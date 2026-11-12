@@ -20,7 +20,9 @@ The legacy `ibp=htl;jobs` parameter redirects to the same vertical. The Actor no
 | Query | `q=<keyword>`, `udm=8`, `hl=en`, `gl=us` |
 | Method | `GET` |
 | Proxy | Default `GOOGLESERP`; override with `apifyProxyGroups` or `proxyUrls` |
+| Country | `gl` derives from the Location input (`src/markets.js`), default `us`; `hl=en` because the parser matches English labels |
 | Transport | HTTP for `GOOGLESERP`; redirects are followed |
+| Request timeout | 90 s. The Jobs vertical takes 27-70 s through `GOOGLE_SERP`; a 30 s timeout failed every request |
 | Response marker | Title ends with `- Google Search`, page is about 1.0-1.2 MB |
 | Job marker | `div[data-preview-id]` and matching `template#<preview-id>` |
 | Jobs per request | 10 |
@@ -97,7 +99,7 @@ remote <keyword>
 ...
 ```
 
-Each variant returns up to 10 jobs. The Actor deduplicates by docid and by `title|company|location`, and stops at `results_wanted`, the request budget, or after 8 consecutive empty variants. `max_pages` is the starting request budget, not a page-number cap. When `results_wanted` is larger than `max_pages * 10`, the Actor raises the budget to `ceil(results_wanted / 5)` and logs the change. It fetches up to 3 variants concurrently, each with a fresh proxy session.
+Each variant returns up to 10 jobs. The Actor deduplicates by docid and by `title|company|location`, and stops at `results_wanted`, the request budget, or when a whole batch of variants adds fewer than 2 new jobs each. `max_pages` is the starting request budget, not a page-number cap. When `results_wanted` is larger than `max_pages * 10`, the Actor raises the budget to `ceil(results_wanted / 5)` and logs the change. It fetches up to 5 variants concurrently, each with a fresh proxy session.
 
 A 200-job run on Apify used 33 requests and finished in 103 seconds after the budget expanded from 10 to 40. A 100-job run used 15 requests and finished in 72 seconds.
 
@@ -131,6 +133,51 @@ All of these produced 10 jobs in the live profile test. Profiles that failed in 
 7. **Changed template ID or card class**
    - The parser falls back to parsing every `template` with `data-encoded-docid`.
    - If both card and template parsing fail, save the page title and length in the warning, not the full response body.
+
+## Failure log
+
+### 2026-11-12 — every request timed out at 30 s
+
+A run with `keyword=admin`, `target=20`, `max_requests=10`, proxy `GOOGLESERP` logged `Request timeout (30000 ms) exceeded` on all six requests and saved nothing.
+
+Measured with the same proxy and profile:
+
+| Request | Latency | Result |
+|---|---|---|
+| `udm=8` (Jobs) | 27-70 s over six probes | 200, 10 cards when the Jobs block is rendered |
+| plain `search?q=` (no `udm`) | 5-6 s | 200, 0 cards |
+
+The Jobs vertical is not broken; the proxy answers it slowly. The 30 s client timeout cut every attempt before the page arrived, and the profile rotation retried the same slow path four times. Fix: `REQUEST_TIMEOUT_MS = 90_000`, and a timeout stops after two attempts so a dead route cannot consume the run budget.
+
+Two further observations from the same probes, both handled by the existing retry loop:
+
+- About half the `udm=8` responses come back as a plain search page (200, 0 `data-preview-id`, no `htl;jobs`) even though the request carried `udm=8`. The next attempt with a fresh session and profile returns the Jobs page.
+- `GOOGLE_SERP` answers non-Google hosts and non-Jobs Google services immediately with `Google query failed: ...` (HTTP 400). It also rejects `https://` with a 400 CONNECT, so keep the `http://` target.
+
+Post-fix runs on the same proxy: 10/10 jobs in 3 requests, 13/20 in 5 requests (budget exhausted), 20/20 in 9 requests in 256 s locally, and 20/20 in 10 requests in 363 s on Apify build 3.0.12 (run `aUi6rBZPc7iBsA71s`). The cloud run spent five attempts on the first variant before that whole variant failed; that is the 0-card behaviour above, not a timeout.
+
+### 2026-11-12 — slow runs: country index, retries, container migration
+
+Measurements that explain most of the run time:
+
+| Change | Evidence |
+|---|---|
+| `gl` from the location | `q=admin near Dubai&udm=8` returned 3 cards with `gl=us` and 10 cards with `gl=ae` |
+| 5 concurrent variants | each request costs 30-70 s, so wall time is batch count × latency |
+| No retry for a cardless page | about half the Jobs answers are a plain SERP; retrying one cost another 30-70 s for the same result, so the next variant is the retry |
+| 2 attempts for a block page | the block is IP-based; a third and fourth attempt only burned 40-60 s |
+| Progress checkpoint | Apify migrated one run to another host (`migrationCount: 1`); the actor restarted from zero, re-fetched finished variants, and wrote 88 dataset items for a reported 53. `src/progress.js` now stores saved counts, seen ids and the next variant index in the run's key-value store and continues after a migration |
+
+Measured on the same input (`admin`, location `Dubai`, 100 jobs, `GOOGLESERP`):
+
+| | Before | After |
+|---|---|---|
+| First jobs saved | 3 jobs at 65 s | 10 jobs at 75 s |
+| Jobs per second | 0.12 (13 jobs in 108 s) | 0.20 (30 jobs in 151 s) |
+| Timeouts | none (after the timeout fix) | none |
+| Duplicate items after a migration | 88 items for 53 saved | checkpoint prevents it |
+
+A 100-job run still needs 10 variant requests and about 5-9 minutes on this proxy; the target is request-bound, not client-bound.
 
 ## Local testing
 
